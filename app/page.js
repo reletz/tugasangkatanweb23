@@ -212,6 +212,32 @@ function glob2Regex(string) {
     return /(?!.*)/g; // regex that does not match anything
   }
 }
+function safeStringEvaluation(string) {
+  let i = 0;
+  let result = "";
+  const quote = string[i++];
+  if ((quote != "'" && quote != "\"") || string[string.length - 1] != quote)
+    throw new Error("String not quoted properly");
+  while (i < string.length - 1) {
+    const char = string[i++];
+    if (char == "\\") {
+      const nextChar = string[i++];
+      if (nextChar == null)
+        throw new Error("Expecting next char after escape character");
+      if (nextChar == "n")
+        result += "\n";
+      else if (nextChar == "r")
+        result += "\r";
+      else if (nextChar == "t")
+        result += "\t";
+      else
+        result += nextChar;
+      continue;
+    }
+    result += char;
+  }
+  return result;
+}
 function categoryFilter(searchTerm) {
   const optionalInclude = (s) => s.includes("*") ? s : `*${s}*`;
   const keywordQueries = [];
@@ -220,7 +246,7 @@ function categoryFilter(searchTerm) {
   let lastIndex = 0;
   let matcher;
   while ((matcher = regex.exec(searchTerm)) != null) {
-    keywordQueries.push({ name: matcher[1], value: optionalInclude(matcher[2] || matcher[3]) });
+    keywordQueries.push({ name: matcher[1], value: matcher[2] ? optionalInclude(safeStringEvaluation(matcher[2])) : optionalInclude(matcher[3]) });
     plainQueries.push(searchTerm.slice(lastIndex, matcher.index));
     lastIndex = matcher.index + matcher[0].length;
   }

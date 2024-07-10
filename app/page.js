@@ -142,6 +142,113 @@ function newLazyFilter(data, filter, advance) {
   };
 }
 
+function glob2Regex(string) {
+  let regex = "";
+  let inGroup = false;
+  let inRange = false;
+  let c;
+  for (let i = 0; i < string.length; i++) {
+    switch(c = string[i]) {
+      case "/":
+      case "$":
+      case "^":
+      case "+":
+      case ".":
+      case "(":
+      case ")":
+      case "=":
+      case "|":
+        regex += "\\" + c;
+        break;
+      case "?":
+        regex += ".";
+        break;
+      case "[":
+        inRange = true;
+        regex += c;
+        break;
+      case "]":
+        inRange = false;
+        regex += c;
+        break;
+      case "!":
+        if (inRange) {
+          regex += "^";
+          break;
+        }
+        regex += c;
+        break;
+      case "{":
+        inGroup = true;
+        regex += "(";
+        break;
+      case "}":
+        inGroup = false;
+        regex += ")";
+        break;
+      case ",":
+        if (inGroup) {
+          regex += "|";
+          break;
+        }
+        regex += c;
+        break;
+      case "*":
+        while (string[i + 1] == "*")
+          i++;
+        regex += ".*";
+        break;
+      case "\\":
+        regex += "\\" + (string[++i] || "");
+        break;
+      default:
+        regex += c;
+    }
+  }
+  regex = `^${regex}$`;
+  try {
+    return new RegExp(regex, "i");
+  } catch(_) {
+    return /(?!.*)/g; // regex that does not match anything
+  }
+}
+function categoryFilter(searchTerm) {
+  const optionalInclude = (s) => s.includes("*") ? s : `*${s}*`;
+  const keywordQueries = [];
+  const plainQueries = [];
+  const regex = /([a-zA-Z$_][a-zA-Z0-9$_-]*):(?:((?:"(?:[^"\\]|\\.)*")|(?:'(?:[^'\\]|\\.)*'))|([^\s]*))/g;
+  let lastIndex = 0;
+  let matcher;
+  while ((matcher = regex.exec(searchTerm)) != null) {
+    keywordQueries.push({ name: matcher[1], value: optionalInclude(matcher[2] || matcher[3]) });
+    plainQueries.push(searchTerm.slice(lastIndex, matcher.index));
+    lastIndex = matcher.index + matcher[0].length;
+  }
+  if (lastIndex < searchTerm.length)
+    plainQueries.push(searchTerm.slice(lastIndex));
+  for (let i = plainQueries.length - 1; i >= 0; i--) {
+    const plainQuery = plainQueries[i] = optionalInclude(plainQueries[i].trim().replaceAll(/\s+/g, " "));
+    if (plainQuery.length > 0)
+      continue;
+    plainQueries.splice(i, 1);
+  }
+  const keywordTests = keywordQueries.map(q => { const r = glob2Regex(q.value); return ({ ...q, test: s => r.test(s) }) });
+  const plainTests = plainQueries.map(q => { const r = glob2Regex(q); return ({ value: q, test: s => r.test(s) }) });
+  const filter = (d) => {
+    if (plainTests.some(t => !Object.values(d).some(v => t.test(v))))
+      return false;
+    const keywordKeys = Object.fromEntries(Object.keys(d).map(k => [k.toLowerCase().replaceAll(/[^a-zA-Z0-9$_-]/g, "-"), k]));
+    if (keywordTests.some(t => keywordKeys[t.name] == null || !t.test(d[keywordKeys[t.name]])))
+      return false;
+    return true;
+  };
+  return {
+    keywordQueries: keywordQueries,
+    plainQueries: plainQueries,
+    filter: filter
+  }
+};
+
 export default function Home() {
   const [data, setData] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -154,7 +261,7 @@ export default function Home() {
       setFilteredData([]);
       return;
     }
-    const lazyFilter = newLazyFilter(data, d => d.NIM && d.NIM.includes(searchTerm), 20);
+    const lazyFilter = newLazyFilter(data, categoryFilter(searchTerm).filter, 20);
     setLazyFilter(lazyFilter);
     setFilteredData(lazyFilter.next());
   }, [data, searchTerm]);
@@ -166,9 +273,17 @@ export default function Home() {
     const setupForIndex = (index) => {
       const element = document.querySelector(`main .__card_item:nth-child(${index + 1})`);
       const observer = new IntersectionObserver((e) => {
-        if (lazyFilter.index != filterIndex || !e.some(i => i.intersectionRatio > 0))
+        if (lazyFilter.index != filterIndex) {
+          observer.disconnect();
           return;
-        setFilteredData(d => [...d, ...(lazyFilter.next() || [])]);
+        }
+        if (!e.some(i => i.intersectionRatio > 0))
+          return;
+        observer.disconnect();
+        const newFilteredData = lazyFilter.next();
+        if (newFilteredData == null)
+          return;
+        setFilteredData(d => [...d, ...newFilteredData]);
       });
       observer.observe(element);
       return () => observer.disconnect();

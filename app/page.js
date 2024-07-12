@@ -2,8 +2,8 @@
 import { useEffect, useState } from "react";
 
 // Function to fetch and parse CSV data
-async function fetchCSVData(url) {
-  const res = await fetch(url);
+async function fetchCSVData(url, abortSignal) {
+  const res = await fetch(url, { signal: abortSignal });
 
   if (!res.ok) {
     throw new Error("Failed to fetch data");
@@ -90,13 +90,13 @@ function forwardHash(string) {
 	return `${[...new Array(24)].map(() => Math.floor(random() * 16).toString(16)).join("")}`;
 }
 
-async function getData() {
+async function getData(abortSignal) {
   const cacheFirstThenFetch = async (url) => {
     const cacheId = forwardHash(url);
     const cached = readCSVCache(cacheId);
     if (cached != null)
       return cached;
-    const fetched = await fetchCSVData(url);
+    const fetched = await fetchCSVData(url, abortSignal);
     putCSVCache(cacheId, fetched);
     return fetched;
   }
@@ -110,41 +110,231 @@ async function getData() {
       "https://docs.google.com/spreadsheets/d/e/2PACX-1vTE2qC8JGbyobYANyA461vgrpVB_F1ByyvHcMerzr1ccWWd1XX1b62KiZ6iIFCXVUvY_Ce-VRonqE28/pub?gid=1486137275&single=true&output=csv",
   };
 
-  return Object.fromEntries(await Promise.all(Object.entries(urls)
-    .map(async ([k, v]) => [k, await cacheFirstThenFetch(v)])));
+  return (await Promise.all(Object.entries(urls).map(async ([k, v]) => 
+    (await cacheFirstThenFetch(v)).map(d => ({ ...d, Dataset: k }))))).flat();
 }
 
+function newLazyFilter(data, filter, advance) {
+  // assumes data is not modifiable.
+  let dataIndex = 0;
+  let resultTarget = 0;
+  let resultLength = 0;
+  const next = () => {
+    if (dataIndex >= data.length)
+      return null;
+    const result = [];
+    resultTarget += advance;
+    while (resultLength + result.length < resultTarget && dataIndex < data.length) {
+      const item = data[dataIndex];
+      if (!filter(item)) {
+        dataIndex++;
+        continue;
+      }
+      result.push(item);
+      dataIndex++;
+    }
+    resultLength += result.length;
+    return result;
+  };
+  return {
+    get index() { return dataIndex; },
+    next: next
+  };
+}
+
+function glob2Regex(string) {
+  let regex = "";
+  let inGroup = false;
+  let inRange = false;
+  let c;
+  for (let i = 0; i < string.length; i++) {
+    switch(c = string[i]) {
+      case "/":
+      case "$":
+      case "^":
+      case "+":
+      case ".":
+      case "(":
+      case ")":
+      case "=":
+      case "|":
+        regex += "\\" + c;
+        break;
+      case "?":
+        regex += ".";
+        break;
+      case "[":
+        inRange = true;
+        regex += c;
+        break;
+      case "]":
+        inRange = false;
+        regex += c;
+        break;
+      case "!":
+        if (inRange) {
+          regex += "^";
+          break;
+        }
+        regex += c;
+        break;
+      case "{":
+        inGroup = true;
+        regex += "(";
+        break;
+      case "}":
+        inGroup = false;
+        regex += ")";
+        break;
+      case ",":
+        if (inGroup) {
+          regex += "|";
+          break;
+        }
+        regex += c;
+        break;
+      case "*":
+        while (string[i + 1] == "*")
+          i++;
+        regex += ".*";
+        break;
+      case "\\":
+        regex += "\\" + (string[++i] || "");
+        break;
+      default:
+        regex += c;
+    }
+  }
+  regex = `^${regex}$`;
+  try {
+    return new RegExp(regex, "i");
+  } catch(_) {
+    return /(?!.*)/g; // regex that does not match anything
+  }
+}
+function safeStringEvaluation(string) {
+  let i = 0;
+  let result = "";
+  const quote = string[i++];
+  if ((quote != "'" && quote != "\"") || string[string.length - 1] != quote)
+    throw new Error("String not quoted properly");
+  while (i < string.length - 1) {
+    const char = string[i++];
+    if (char == "\\") {
+      const nextChar = string[i++];
+      if (nextChar == null)
+        throw new Error("Expecting next char after escape character");
+      if (nextChar == "n")
+        result += "\n";
+      else if (nextChar == "r")
+        result += "\r";
+      else if (nextChar == "t")
+        result += "\t";
+      else
+        result += nextChar;
+      continue;
+    }
+    result += char;
+  }
+  return result;
+}
+function categoryFilter(searchTerm) {
+  const optionalInclude = (s) => s.includes("*") ? s : `*${s}*`;
+  const keywordQueries = [];
+  const plainQueries = [];
+  const regex = /([a-zA-Z$_][a-zA-Z0-9$_-]*):(?:((?:"(?:[^"\\]|\\.)*")|(?:'(?:[^'\\]|\\.)*'))|([^\s]*))/g;
+  let lastIndex = 0;
+  let matcher;
+  while ((matcher = regex.exec(searchTerm)) != null) {
+    keywordQueries.push({ name: matcher[1], value: matcher[2] ? optionalInclude(safeStringEvaluation(matcher[2])) : optionalInclude(matcher[3]) });
+    plainQueries.push(searchTerm.slice(lastIndex, matcher.index));
+    lastIndex = matcher.index + matcher[0].length;
+  }
+  if (lastIndex < searchTerm.length)
+    plainQueries.push(searchTerm.slice(lastIndex));
+  for (let i = plainQueries.length - 1; i >= 0; i--) {
+    const plainQuery = plainQueries[i] = optionalInclude(plainQueries[i].trim().replaceAll(/\s+/g, " "));
+    if (plainQuery.length > 0)
+      continue;
+    plainQueries.splice(i, 1);
+  }
+  const keywordTests = keywordQueries.map(q => { const r = glob2Regex(q.value); return ({ ...q, test: s => r.test(s) }) });
+  const plainTests = plainQueries.map(q => { const r = glob2Regex(q); return ({ value: q, test: s => r.test(s) }) });
+  const filter = (d) => {
+    if (plainTests.some(t => !Object.values(d).some(v => t.test(v))))
+      return false;
+    const keywordKeys = Object.fromEntries(Object.keys(d).map(k => [k.toLowerCase().replaceAll(/[^a-zA-Z0-9$_-]/g, "-"), k]));
+    if (keywordTests.some(t => keywordKeys[t.name] == null || !t.test(d[keywordKeys[t.name]])))
+      return false;
+    return true;
+  };
+  return {
+    keywordQueries: keywordQueries,
+    plainQueries: plainQueries,
+    filter: filter
+  }
+};
+
 export default function Home() {
-  const [data, setData] = useState({});
+  const [data, setData] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [lazyFilter, setLazyFilter] = useState(null);
   const [filteredData, setFilteredData] = useState([]);
 
-  const handleSearch = (e) => {
-    const term = e.target.value;
-    setSearchTerm(term);
-
-    if (term) {
-      const results = [];
-      Object.values(data).forEach((dataset) => {
-        dataset.forEach((item) => {
-          if (item.NIM && item.NIM.includes(term)) {
-            results.push(item);
-          }
-        });
-      });
-      setFilteredData(results);
-    } else {
+  useEffect(() => {
+    if (data == null || !searchTerm) {
+      setLazyFilter(null);
       setFilteredData([]);
+      return;
     }
-  };
+    const lazyFilter = newLazyFilter(data, categoryFilter(searchTerm).filter, 20);
+    setLazyFilter(lazyFilter);
+    setFilteredData(lazyFilter.next());
+  }, [data, searchTerm]);
 
   useEffect(() => {
-    const fetchData = async () => {
-      const newData = await getData();
-      console.log(newData);
-      setData(newData);
+    if (lazyFilter == null)
+      return;
+    const filterIndex = lazyFilter.index;
+    const setupForIndex = (index) => {
+      const element = document.querySelector(`main .__card_item:nth-child(${index + 1})`);
+      const observer = new IntersectionObserver((e) => {
+        if (lazyFilter.index != filterIndex) {
+          observer.disconnect();
+          return;
+        }
+        if (!e.some(i => i.intersectionRatio > 0))
+          return;
+        observer.disconnect();
+        const newFilteredData = lazyFilter.next();
+        if (newFilteredData == null)
+          return;
+        setFilteredData(d => [...d, ...newFilteredData]);
+      });
+      observer.observe(element);
+      return () => observer.disconnect();
     };
-    fetchData();
+    const cleanups = [];
+    if (filteredData.length >= 10)
+      cleanups.push(setupForIndex(filteredData.length - 10));
+    if (filteredData.length > 0)
+      cleanups.push(setupForIndex(filteredData.length - 1));
+    return () => {
+      for (const cleanup of cleanups)
+        cleanup();
+    };
+  }, [lazyFilter, filteredData]);
+
+  useEffect(() => {
+    const abortController = new AbortController();
+    let finished = false;
+    getData(abortController.signal)
+      .then(d => setData(d)).finally(() => finished = true)
+    return () => {
+      if (finished)
+        return;
+      abortController.abort();
+    };
   }, []);
 
   return (
@@ -155,37 +345,32 @@ export default function Home() {
           type="text"
           placeholder="Search by NIM"
           value={searchTerm}
-          onChange={handleSearch}
+          onChange={e => setSearchTerm(e.target.value)}
           className={`relative p-2 border-none rounded-lg w-full focus:outline-none max-w-[600px] mx-auto ${
-            !data.angkatan20 ? "bg-gray-900" : "bg-black"
+            data == null ? "bg-gray-900" : "bg-black"
           }`}
-          disabled={!data.angkatan20}
+          disabled={data == null}
         />
       </div>
 
       <div className="h-0 grow px-4 py-8 w-full max-w-[700px]">
-        {!data.angkatan20 && <p>Sedang mengambil data...</p>}
-        {searchTerm && (
-          <div className="w-full flex flex-col h-full overflow-y-auto gap-4 px-2">
-            {filteredData.length > 0 ? (
-              filteredData.map((item, index) => (
-                <div key={index} className="flex w-full rounded-lg px-2 py-4 bg-gradient-to-tr from-purple-700/30 to-red-600/30">
-                  <div className="flex h-full items-center justify-center w-fit">
-                    <p className="pr-2 font-bold">{item.NIM}</p>
-                  </div>
-                  <div className="pl-2 grow">
-                    <p className="text-xs tracking-wide uppercase">
-                      Jurusan: {item.Jurusan} - Kampus {item.Kampus || "ITB"}
-                    </p>
-                    <p className="text-xl">{item["Nama Lengkap"]}</p>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <p>No results found</p>
-            )}
-          </div>
-        )}
+        {data == null && <p>Sedang mengambil data...</p>}
+        <div className="w-full flex flex-col h-full overflow-y-auto gap-4 px-2">
+          {searchTerm && lazyFilter && filteredData.length == 0 && <p>No results found</p>}
+          {filteredData.map(item => (
+            <div key={item.NIM} className="__card_item flex w-full rounded-lg px-2 py-4 bg-gradient-to-tr from-purple-700/30 to-red-600/30">
+              <div className="flex h-full items-center justify-center w-fit">
+                <p className="pr-2 font-bold">{item.NIM}</p>
+              </div>
+              <div className="pl-2 grow">
+                <p className="text-xs tracking-wide uppercase">
+                  Jurusan: {item.Jurusan} - Kampus {item.Kampus || "ITB"}
+                </p>
+                <p className="text-xl">{item["Nama Lengkap"]}</p>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </main>
   );

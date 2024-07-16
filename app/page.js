@@ -51,13 +51,7 @@ function putCSVCache(id, payload) {
   const text = JSON.stringify(data);
   localStorage.setItem(`nim-cache:${id}`, text);
 }
-function deleteAllCSVCache() {
-  new Array(localStorage.length)
-    .fill(null)
-    .map((_, i) => localStorage.key(i))
-    .filter((k) => k.startsWith("nim-cache:"))
-    .forEach((k) => localStorage.removeItem(k));
-}
+
 function seedrandom(seed) {
   // sfc32 with cyrb128 seeder
   let h1 = 1779033703;
@@ -351,6 +345,19 @@ export default function Home() {
     };
   }, []);
 
+  async function deleteAllCSVCache() {
+    new Array(localStorage.length)
+      .fill(null)
+      .map((_, i) => localStorage.key(i))
+      .filter((k) => k.startsWith("nim-cache:"))
+      .forEach((k) => localStorage.removeItem(k));
+
+    setFilteredData([]);
+    const data = await getData();
+    console.log(data);
+    setData(await getData());
+  }
+
   return (
     <main className="flex h-screen flex-col items-center justify-center w-full py-8 bg-black text-white relative">
       <div className="w-fit h-screen fixed left-0">
@@ -361,20 +368,27 @@ export default function Home() {
         </div>
       </div>
       <div className="w-full max-w-[604px] flex justify-between px-4">
-        <div className="relative flex flex-col">
+        <div className="relative flex flex-col justify-center">
           <h1 className="text-white relative py-10">Ketik NIM untuk mencari sang sigma skibidi!</h1>
-          <div className="flex gap-4">
-            <Link target="_blank" href="https://github.com/reletz/webnya23">
-              <FaGithub size={25} className="hover:scale-[125%] ease-in duration-150" />
-            </Link>
-            <Link
-              target="_blank"
-              href="https://docs.google.com/spreadsheets/d/1ijk4ypd1z0OJwwIm62ztPfncu_mUjRTa-jmBX28I3sc/edit?usp=sharing ">
-              <SiGooglesheets size={25} className="hover:scale-[125%] ease-in duration-150" />
-            </Link>
+          <div className="flex flex-col md:flex-row gap-4 items-start md:items-center">
+            <div className="flex gap-4">
+              <Link target="_blank" href="https://github.com/reletz/webnya23">
+                <FaGithub size={25} className="hover:scale-[125%] ease-in duration-150" />
+              </Link>
+              <Link
+                target="_blank"
+                href="https://docs.google.com/spreadsheets/d/1ijk4ypd1z0OJwwIm62ztPfncu_mUjRTa-jmBX28I3sc/edit?usp=sharing ">
+                <SiGooglesheets size={25} className="hover:scale-[125%] ease-in duration-150" />
+              </Link>
+            </div>
+            <button
+              onClick={() => deleteAllCSVCache()}
+              className="bg-white rounded-lg text-black px-2 py-1 font-semibold hover:scale-105 duration-150 shadow-transparent shadow-lg hover:shadow-white/50">
+              Clear Cache
+            </button>
           </div>
         </div>
-        <div className="h-[10rem] w-[10rem] relative py-4">
+        <div className="h-auto max-h-[201px] self-stretch w-[10rem] relative py-4">
           <Image src="/skibidi-toilet.png" alt="tv-man skibidi" width={200} height={200} className="h-full w-full object-cover" />
           <div className="absolute left-0 top-0 bg-gradient-to-l from-black via-black/10 to-black h-full w-full" />
           <div className="absolute left-0 top-0 bg-gradient-to-t from-black via-black/10 to-black h-full w-full" />
@@ -403,7 +417,7 @@ export default function Home() {
           {filteredData.map((item) => (
             <div
               key={item.NIM}
-              className="__card_item hover:scale-105 group duration-150 ease-in flex w-full rounded-lg px-2 py-4 bg-gradient-to-tr from-white/80 to-white/50 text-black flex-col md:flex-row">
+              className="__card_item hover:scale-105 group duration-150 ease-in flex w-full rounded-lg px-2 py-4 bg-white/50 bg-gradient-to-tr from-white/80 to-white/50 text-black flex-col md:flex-row">
               <div className="flex h-full items-center justify-center w-fit">
                 <p className="font-bold px-2 md:p-0 md:pr-2">{item.NIM}</p>
               </div>

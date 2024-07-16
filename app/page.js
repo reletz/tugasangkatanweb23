@@ -4,10 +4,11 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { FaGithub } from "react-icons/fa";
 import { SiGooglesheets } from "react-icons/si";
+import clearMahasiswaCache from "./action";
 
 // Function to fetch and parse CSV data
 async function fetchCSVData(url, abortSignal) {
-  const res = await fetch(url, { signal: abortSignal });
+  const res = await fetch(url, { signal: abortSignal, next: { tags: ["mahasiswa"] } });
 
   if (!res.ok) {
     throw new Error("Failed to fetch data");
@@ -352,9 +353,8 @@ export default function Home() {
       .filter((k) => k.startsWith("nim-cache:"))
       .forEach((k) => localStorage.removeItem(k));
 
+    clearMahasiswaCache();
     setFilteredData([]);
-    const data = await getData();
-    console.log(data);
     setData(await getData());
   }
 

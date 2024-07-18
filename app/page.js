@@ -423,7 +423,7 @@ export default function Home() {
               </div>
               <div className="pl-2 grow flex flex-col-reverse md:flex-col">
                 <p className="text-xs tracking-wide uppercase">
-                  Jurusan: {item.Jurusan} - Kampus {item.Kampus || "ITB"}
+                  {item.Kadek === "Kanim" ? "kakak" : "adik"} | Jurusan: {item.Jurusan} - Kampus {item.Kampus || "ITB"}
                 </p>
                 <p className="text-xl group-hover:underline duration-150 ease-in">{item["Nama Lengkap"]}</p>
               </div>
